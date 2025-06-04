@@ -118,6 +118,9 @@ class ResourceModuleInterface:
     def rpc_params(self):
         return self.handle.rpc("sched-fluxion-resource.params").get()
 
+    def rpc_get_aggregate(self):
+        return self.handle.rpc("sched-fluxion-resource.query_rcounts").get()
+
 
 def match_alloc_action(args):
     """
@@ -389,6 +392,22 @@ def status_action(_):
     print(json.dumps(resp))
 
 
+def aggregate_action(_):
+    """
+    Action for status sub-command
+    """
+
+    rmod = ResourceModuleInterface()
+    resp = rmod.rpc_get_aggregate()
+    print("CRITERIA")
+    print("all: 'status=up or status=down'")
+    print("down: 'status=down'")
+    print("allocated: 'sched-now=allocated'")
+    print("=" * width())
+    print("MATCHED RESOURCES:")
+    print(json.dumps(resp))
+
+
 def set_status_action(args):
     """
     Action for set-status sub-command
@@ -557,6 +576,7 @@ def main():
     )
     parser_n = mkparser("ns-info", "Get remapped ID given raw ID seen by the reader.")
     parser_pa = mkparser("params", "Display the module's parameter values.")
+    parser_agg = mkparser("aggregate", "Query aggregate resource stats.")
 
     #
     # Action for stat sub-command
@@ -650,6 +670,8 @@ def main():
     #
     parser_pa.set_defaults(func=params_action)
 
+
+    parser_agg.set_defaults(func=aggregate_action)
     #
     # Parse the args and call an action routine as part of that
     #

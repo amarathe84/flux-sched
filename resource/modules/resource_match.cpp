@@ -34,6 +34,11 @@ extern "C" {
 #include "resource/schema/perf_data.hpp"
 #include <jansson.hpp>
 
+#include <flux/core/flux.h>              // for flux_respond_*(), flux_msg_t, etc.
+#include "resource/schema/resource_graph.hpp"  // defines make_resource_graph_view, resource_graph_view_ref_t
+#include "resource/policies/base/dfu_match_cb.hpp"       // defines dfu_match_cb_t
+//#include "resource/aggregate_filter_planner.hpp" // for aggregate_filter_planner()
+
 using namespace Flux::resource_model;
 using namespace Flux::opts_manager;
 
@@ -272,6 +277,11 @@ static void set_status_request_cb (flux_t *h,
                                    const flux_msg_t *msg,
                                    void *arg);
 
+static void query_resource_counts_cb(flux_t *h,
+                                    flux_msg_handler_t *w,
+                                    const flux_msg_t   *msg,
+                                    void *arg);
+
 static const struct flux_msg_handler_spec htab[] =
     {{FLUX_MSGTYPE_REQUEST, "sched-fluxion-resource.match", match_request_cb, 0},
      {FLUX_MSGTYPE_REQUEST, "sched-fluxion-resource.match_multi", match_multi_request_cb, 0},
@@ -297,6 +307,7 @@ static const struct flux_msg_handler_spec htab[] =
      {FLUX_MSGTYPE_REQUEST, "feasibility.check", satisfiability_request_cb, 0},
      {FLUX_MSGTYPE_REQUEST, "sched-fluxion-resource.params", params_request_cb, 0},
      {FLUX_MSGTYPE_REQUEST, "sched-fluxion-resource.set_status", set_status_request_cb, 0},
+     {FLUX_MSGTYPE_REQUEST, "sched-fluxion-resource.query_rcounts", query_resource_counts_cb, 0},
      FLUX_MSGHANDLER_TABLE_END};
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3175,6 +3186,132 @@ static int register_feasibility (flux_t *h)
     flux_future_destroy (f);
     return rc;
 }
+
+////////////////////////////////////////
+// Additions to support resource query 
+////
+static void query_resource_counts_cb(flux_t *h,
+                         flux_msg_handler_t *w,
+                         const flux_msg_t *msg,
+                         void *arg)
+{
+    std::cout << "Starting query_resource_count" << std::endl;
+    //try #3 getctx(h) returns a std::shared_ptr<resource_ctx_t>, so get that first:
+    auto ctx_sp = getctx(h);
+
+    std::cout << "Got context " << std::endl;
+    if (!ctx_sp) {
+        flux_respond_error(h, msg, EINVAL, "No module context");
+        return;
+    }
+ 
+    resource_ctx_t *ctx = ctx_sp.get();
+
+    std::cout << "Got context" << std::endl;
+    dfu_traverser_t &tr = *(ctx->traverser);
+    subsystem_t dom = tr.get_match_cb()->dom_subsystem ();
+    // sanity cehck: verify that DFU matcher is initialized
+    if (!ctx->matcher) {
+        flux_respond_error(h, msg, EINVAL, "Matcher not initialized");
+        return;
+    }
+
+    // get in-memory matcher object to get the 
+    //    dfu_match_cb_t::graph() returns resource_graph_t by value.
+    Flux::resource_model::resource_graph_t &graph = ctx->db->resource_graph;
+
+    std::cout << "Got resource graph" << std::endl;
+    // get the “cluster” root vertex from that graph.
+    //    resource_graph_t::root_vertex() returns a resource_graph_vtx_t.
+    vtx_t root_vtx = ctx->db->metadata.roots[dom];
+    if(!root_vtx) {
+        flux_respond_error(h, msg, EINVAL, "root_vtx is null");
+        std::cout << "Root vertex is null" << std::endl;
+        return;
+    }
+
+    planner_multi_t *p = (*tr.get_graph ())[root_vtx].idata.subplans.at (dom);
+    if(!p) {
+        flux_respond_error(h, msg, EINVAL, "Planner multi obj is null");
+        std::cout << "Planner multi obj is null" << std::endl;
+    }
+
+ /*    ////////////////////////////////////////////////////////////
+    // Rest of this is as suggested by Dan
+
+    //Query counts at current time
+    int64_t now      = time(nullptr);
+    int64_t total    = planner->capacity();         // total units
+    int64_t free     = planner->available(now);     // free units now
+    int64_t occupied = total - free;               // occupied units
+
+    // Dervied from other cb
+    //Respond with JSON payload
+    json_t *resp = json_pack(
+        "{s:i, s:i, s:i}",
+        "total",    total,
+        "occupied", occupied,
+        "free",     free
+    );
+
+    char *text = json_dumps(resp, 0);
+    if (!text) {
+        json_decref(resp);
+        flux_respond_error(h, msg, ENOMEM, "JSON dump failed");
+        return;
+    }
+    flux_respond_raw(h, msg, text, 0);
+    ::free(text);
+    json_decref(resp);  */
+    return; 
+/*
+//try #2: did not work because I think the matcher doesn't expose the graph structure
+// we're looking for: need to check with Dan
+    resource_ctx_t *ctx = (resource_ctx_t*)( getctx(h) );
+    if (!ctx) {
+        flux_respond_error(h, msg, EINVAL, "No module context");
+        return;
+    }
+
+    //trying to ensure the DFU matcher is initialized (matcher is a shared_ptr<dfu_match_cb_t>).
+    if (!ctx->matcher) {
+        flux_respond_error(h, msg, EINVAL, "Matcher not initialized");
+        return;
+    }
+*/
+/*  
+    auto ctx = getctx(h);
+    if (!ctx) {
+        flux_respond_error(h, msg, EINVAL, "No module context");
+        return;
+    }
+
+//    //Verify that the matcher already exists. 
+//    //@todo: if not, we need to somehow get the matcher initialized (not sure how that works yet)
+//    if (!ctx->matcher) {
+//        flux_respond_error(h, msg, EINVAL, "Matcher is not initialized");
+//        return;
+//    }
+
+    //Sanity‐check that the DFU matcher was already initialized.  If
+    //ctx->matcher is null, either we never called our match‐setup path,
+    //or something else is not filled up.  In that case, return;
+    //
+    if (!ctx->matcher) {
+        flux_respond_error(h, msg, EINVAL, "Matcher not initialized");
+        return;
+    }
+
+    resource_graph_view_ref_t view = make_resource_graph_view(ctx->db);
+    if (!view) {
+        flux_respond_error(h, msg, EINVAL, "Failed to construct graph view");
+        return;
+    }
+
+*/
+
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Module Main
